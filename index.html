@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>WebRTC + GitHub Pages 視訊測試</title>
+  </head>
+  <body>
+    <h1>WebRTC P2P 視訊測試</h1>
+
+    <div>
+      <h2>本機 (Local)</h2>
+      <video id="localVideo" autoplay muted></video>
+    </div>
+
+    <div>
+      <h2>遠端 (Remote)</h2>
+      <video id="remoteVideo" autoplay></video>
+    </div>
+
+    <button id="startBtn">1. 開始取得媒體 (Get Media)</button>
+    <button id="callBtn" disabled>2. 建立視訊連線 (Call)</button>
+
+    <script>
+      // ** 重要：將此處替換為您 ngrok 視窗中顯示的 HTTPS 網址，並使用 wss:// 協定 **
+      const SIGNALING_SERVER_URL = "wss://xxxxxx.ngrok-free.app";
+
+      const STUN_SERVER = "stun:stun.l.google.com:19302"; // 免費的公共 STUN 伺服器
+      const configuration = {
+        iceServers: [{ urls: STUN_SERVER }],
+      };
+
+      let localStream;
+      let localPeerConnection;
+      let ws;
+
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
+      const startBtn = document.getElementById("startBtn");
+      const callBtn = document.getElementById("callBtn");
+
+      startBtn.onclick = startMedia;
+      callBtn.onclick = callUser;
+      async function startMedia() {
+        try {
+          // WebRTC 要求在 HTTPS 或 localhost 環境下才能呼叫
+          localStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+          localVideo.srcObject = localStream;
+          startBtn.disabled = true;
+          callBtn.disabled = false;
+
+          // 媒體取得成功後，就可以連線到信令伺服器
+          connectSignalingServer();
+        } catch (e) {
+          console.error("無法取得媒體:", e);
+          alert(
+            "請確認您正在 HTTPS 或 localhost 環境下運行，並允許使用攝影機。"
+          );
+        }
+      }
+      function connectSignalingServer() {
+        ws = new WebSocket(SIGNALING_SERVER_URL);
+
+        ws.onopen = () => {
+          console.log("成功連線到信令伺服器 (ngrok WSS)");
+        };
+
+        ws.onmessage = async (event) => {
+          const message = JSON.parse(event.data);
+
+          // 處理信號訊息 (Offer/Answer/Candidate)
+          if (message.type === "offer") {
+            // 接收到 Offer，這是被呼叫方 (Callee) 的動作
+            await localPeerConnection.setRemoteDescription(
+              new RTCSessionDescription(message)
+            );
+            const answer = await localPeerConnection.createAnswer();
+            await localPeerConnection.setLocalDescription(answer);
+            ws.send(JSON.stringify(answer));
+          } else if (message.type === "answer") {
+            // 接收到 Answer，這是呼叫方 (Caller) 的動作
+            await localPeerConnection.setRemoteDescription(
+              new RTCSessionDescription(message)
+            );
+          } else if (message.type === "candidate") {
+            // 接收到 ICE Candidate
+            try {
+              await localPeerConnection.addIceCandidate(
+                new RTCIceCandidate(message.candidate)
+              );
+            } catch (e) {
+              console.error("新增 ICE Candidate 失敗:", e);
+            }
+          }
+        };
+
+        ws.onclose = () => console.log("信令伺服器斷開連線");
+        ws.onerror = (e) => console.error("WebSocket 錯誤:", e);
+      }
+      async function callUser() {
+        localPeerConnection = new RTCPeerConnection(configuration);
+
+        // 1. 處理本機媒體流
+        localStream.getTracks().forEach((track) => {
+          localPeerConnection.addTrack(track, localStream);
+        });
+
+        // 2. 處理遠端媒體流
+        localPeerConnection.ontrack = (event) => {
+          if (remoteVideo.srcObject !== event.streams[0]) {
+            remoteVideo.srcObject = event.streams[0];
+            console.log("接收到遠端視訊流");
+          }
+        };
+
+        // 3. 收集並發送 ICE Candidate
+        localPeerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            // 透過信令伺服器將 Candidate 發送給遠端
+            ws.send(
+              JSON.stringify({
+                type: "candidate",
+                candidate: event.candidate,
+              })
+            );
+          }
+        };
+
+        // 4. 建立 Offer (這是呼叫方才做的)
+        try {
+          const offer = await localPeerConnection.createOffer();
+          await localPeerConnection.setLocalDescription(offer);
+
+          // 透過信令伺服器將 Offer 發送給遠端
+          ws.send(JSON.stringify(offer));
+          console.log("已發送 SDP Offer");
+        } catch (e) {
+          console.error("建立 Offer 失敗:", e);
+        }
+      }
+    </script>
+  </body>
+</html>
