@@ -1,23 +1,58 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>WebRTC + GitHub Pages 視訊測試</title>
+    <title>WebRTC P2P 純音訊通話測試</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        text-align: center;
+        margin-top: 20px;
+      }
+      video {
+        width: 300px;
+        height: 200px;
+        background: #eee;
+        border: 1px solid #ccc;
+        margin: 10px;
+      }
+      button {
+        padding: 10px 20px;
+        margin: 5px;
+        cursor: pointer;
+        border: none;
+        border-radius: 5px;
+        color: white;
+      }
+      #startBtn {
+        background-color: #4caf50;
+      } /* 綠色 */
+      #callBtn {
+        background-color: #2196f3;
+      } /* 藍色 */
+      #hangupBtn {
+        background-color: #f44336;
+      } /* 紅色 */
+    </style>
   </head>
   <body>
-    <h1>WebRTC P2P 視訊測試</h1>
+    <h1>WebRTC P2P 純音訊通話測試</h1>
+    <p>由於設備沒有鏡頭，通話已改為純音訊模式 (Audio-only Call)。</p>
 
     <div>
-      <h2>本機 (Local)</h2>
-      <video id="localVideo" autoplay muted></video>
+      <h2>本機 (Local) - 音訊</h2>
+      <video id="localVideo" autoplay style="display: none"></video>
+      <p>麥克風已啟動 (無畫面)</p>
     </div>
 
     <div>
-      <h2>遠端 (Remote)</h2>
-      <video id="remoteVideo" autoplay></video>
+      <h2>遠端 (Remote) - 音訊</h2>
+      <video id="remoteVideo" autoplay style="display: none"></video>
+      <p>遠端音訊播放中 (無畫面)</p>
     </div>
 
     <button id="startBtn">1. 開始取得媒體 (Get Media)</button>
-    <button id="callBtn" disabled>2. 建立視訊連線 (Call)</button>
+    <button id="callBtn" disabled>2. 建立連線 (Call)</button>
+    <button id="hangupBtn" disabled>3. 關閉通話 (Hang Up)</button>
 
     <script>
       // ** 重要：將此處替換為您 ngrok 視窗中顯示的 HTTPS 網址，並使用 wss:// 協定 **
@@ -33,43 +68,55 @@
       let localPeerConnection;
       let ws;
 
+      // 獲取所有需要的 HTML 元素
       const localVideo = document.getElementById("localVideo");
       const remoteVideo = document.getElementById("remoteVideo");
       const startBtn = document.getElementById("startBtn");
       const callBtn = document.getElementById("callBtn");
+      const hangupBtn = document.getElementById("hangupBtn"); // 新增：獲取掛斷按鈕
 
+      // 設置事件處理器
       startBtn.onclick = startMedia;
       callBtn.onclick = callUser;
-      // 修改後的程式碼 (請用這段替換您的 startMedia 函式)
+      hangupBtn.onclick = hangUp; // 新增：掛斷按鈕綁定 hangUp 函式
+
+      // --- 1. 取得本機媒體 (startMedia) ---
       async function startMedia() {
         try {
-          // *** 僅請求音訊，不需要視訊 ***
+          // *** 修正：僅請求音訊，不需要視訊 (video: false) ***
           localStream = await navigator.mediaDevices.getUserMedia({
             video: false,
             audio: true,
           });
 
-          // 由於是純音訊，不再需要將串流賦予給 localVideo 元素
-          // 如果您希望有個東西來證明串流已啟動，可以顯示一個音量指示器，但這裡我們只是註解掉視訊部分
-          // localVideo.srcObject = localStream; // <-- 註解或移除此行
+          // 由於是純音訊，將串流賦予 localVideo 元素 (雖然隱藏，但確保瀏覽器啟動音訊處理)
+          localVideo.srcObject = localStream;
 
-          // 【可選】在 console 輸出，確認音訊軌道已獲取
           console.log(
             "成功獲取音訊串流！音軌數量:",
             localStream.getAudioTracks().length
           );
 
+          // 設置按鈕狀態
           startBtn.disabled = true;
           callBtn.disabled = false;
+          hangupBtn.disabled = true;
 
           connectSignalingServer();
         } catch (e) {
           console.error("無法取得媒體:", e);
-          // 警告訊息可以修改，使其更符合純音訊的語境
-          alert("請確認您正在 HTTPS/localhost 環境下運行，並允許使用麥克風。");
+          alert(
+            "請確認您正在 HTTPS/localhost 環境下運行，並允許使用麥克風。錯誤：" +
+              e.name
+          );
         }
       }
+
+      // --- 2. 連線信令伺服器 (connectSignalingServer) ---
       function connectSignalingServer() {
+        // 如果 WebSocket 已經開啟，則不再重新連線
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+
         ws = new WebSocket(SIGNALING_SERVER_URL);
 
         ws.onopen = () => {
@@ -79,9 +126,20 @@
         ws.onmessage = async (event) => {
           const message = JSON.parse(event.data);
 
-          // 處理信號訊息 (Offer/Answer/Candidate)
+          // --- 處理 Offer 訊息 (被呼叫方) ---
           if (message.type === "offer") {
-            // 接收到 Offer，這是被呼叫方 (Callee) 的動作
+            console.log(
+              "收到 SDP Offer，開始初始化 PeerConnection 並回覆 Answer"
+            );
+
+            // 💡 修正：如果被呼叫方尚未點擊 Call (localPeerConnection == undefined)，則執行初始化。
+            if (!localPeerConnection) {
+              // 執行 callUser() 函式中，與連線初始化相關的邏輯
+              // 注意：此時 callUser() 不會自動執行建立 Offer 的步驟
+              await initializePeerConnection();
+            }
+
+            // 設置遠端描述並創建 Answer
             await localPeerConnection.setRemoteDescription(
               new RTCSessionDescription(message)
             );
@@ -89,38 +147,51 @@
             await localPeerConnection.setLocalDescription(answer);
             ws.send(JSON.stringify(answer));
           } else if (message.type === "answer") {
-            // 接收到 Answer，這是呼叫方 (Caller) 的動作
+            // --- 處理 Answer 訊息 (呼叫方) ---
             await localPeerConnection.setRemoteDescription(
               new RTCSessionDescription(message)
             );
           } else if (message.type === "candidate") {
-            // 接收到 ICE Candidate
+            // --- 處理 ICE Candidate 訊息 ---
             try {
-              await localPeerConnection.addIceCandidate(
-                new RTCIceCandidate(message.candidate)
-              );
+              if (
+                localPeerConnection &&
+                localPeerConnection.signalingState !== "closed"
+              ) {
+                await localPeerConnection.addIceCandidate(
+                  new RTCIceCandidate(message.candidate)
+                );
+              }
             } catch (e) {
               console.error("新增 ICE Candidate 失敗:", e);
             }
+          } else if (message.type === "hangup") {
+            // --- 新增：處理對方掛斷的訊息 ---
+            console.log("收到對方掛斷通話的訊息");
+            // 執行掛斷邏輯，但不發送 hangup 信令，避免迴圈
+            hangUp(false);
+            alert("通話已被對方關閉。");
           }
         };
 
         ws.onclose = () => console.log("信令伺服器斷開連線");
         ws.onerror = (e) => console.error("WebSocket 錯誤:", e);
       }
-      async function callUser() {
+
+      // --- 3. 核心初始化邏輯 (被呼叫方收到 Offer 時也會執行) ---
+      async function initializePeerConnection() {
         localPeerConnection = new RTCPeerConnection(configuration);
 
-        // 1. 處理本機媒體流
+        // 1. 處理本機媒體流 (將音訊軌道新增到 PeerConnection)
         localStream.getTracks().forEach((track) => {
           localPeerConnection.addTrack(track, localStream);
         });
 
-        // 2. 處理遠端媒體流
+        // 2. 處理遠端媒體流 (接收音訊並播放)
         localPeerConnection.ontrack = (event) => {
           if (remoteVideo.srcObject !== event.streams[0]) {
             remoteVideo.srcObject = event.streams[0];
-            console.log("接收到遠端視訊流");
+            console.log("接收到遠端音訊流");
           }
         };
 
@@ -137,7 +208,33 @@
           }
         };
 
-        // 4. 建立 Offer (這是呼叫方才做的)
+        // 4. 監聽連線狀態，啟用掛斷按鈕
+        localPeerConnection.oniceconnectionstatechange = () => {
+          const state = localPeerConnection.iceConnectionState;
+          console.log(`ICE 連線狀態變更: ${state}`);
+
+          if (state === "connected" || state === "completed") {
+            // 連線成功建立
+            hangupBtn.disabled = false;
+            callBtn.disabled = true;
+          } else if (state === "failed" || state === "closed") {
+            // 連線失敗或關閉，重置 UI (但不影響本地媒體流)
+            if (localStream) {
+              callBtn.disabled = false;
+            } else {
+              startBtn.disabled = false;
+            }
+            hangupBtn.disabled = true;
+          }
+        };
+      }
+
+      // --- 4. 建立連線 (callUser - 呼叫方專用) ---
+      async function callUser() {
+        // 執行初始化，這會設置好所有的監聽器
+        await initializePeerConnection();
+
+        // 建立 Offer (這是呼叫方才做的)
         try {
           const offer = await localPeerConnection.createOffer();
           await localPeerConnection.setLocalDescription(offer);
@@ -145,9 +242,53 @@
           // 透過信令伺服器將 Offer 發送給遠端
           ws.send(JSON.stringify(offer));
           console.log("已發送 SDP Offer");
+
+          callBtn.disabled = true; // 發送 Offer 後禁用 Call 按鈕
         } catch (e) {
           console.error("建立 Offer 失敗:", e);
         }
+      }
+
+      // --- 5. 關閉通話 (hangUp 函式) ---
+      /**
+       * 關閉通話、釋放資源並重置狀態。
+       * @param {boolean} sendSignal 是否發送 'hangup' 信令給對方 (預設為 true)
+       */
+      function hangUp(sendSignal = true) {
+        console.log("正在關閉通話...");
+
+        // 1. 關閉 RTCPeerConnection 連線
+        if (localPeerConnection) {
+          localPeerConnection.close();
+          localPeerConnection = null;
+        }
+
+        // 2. 停止本地媒體軌道，釋放麥克風 (保留 startMedia 的啟動狀態)
+        if (localStream) {
+          // localStream.getTracks().forEach((track) => track.stop()); // 讓麥克風保持開啟，方便下次快速連線
+          // localStream = null;
+          // 僅斷開連線，保留本地媒體流
+        }
+
+        // 3. 停止遠端媒體（讓遠端音訊停止播放）
+        if (remoteVideo) {
+          if (remoteVideo.srcObject) {
+            remoteVideo.srcObject.getTracks().forEach((track) => track.stop());
+            remoteVideo.srcObject = null;
+          }
+        }
+
+        // 4. 通知對方掛斷
+        if (sendSignal && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "hangup" }));
+        }
+
+        // 5. 重置按鈕狀態 (假設 localStream 仍然是開啟的)
+        startBtn.disabled = true;
+        callBtn.disabled = false; // 可以重新發起連線
+        hangupBtn.disabled = true;
+
+        console.log("通話已關閉，可以重新建立連線。");
       }
     </script>
   </body>
