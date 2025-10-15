@@ -40,24 +40,33 @@
 
       startBtn.onclick = startMedia;
       callBtn.onclick = callUser;
+      // 修改後的程式碼 (請用這段替換您的 startMedia 函式)
       async function startMedia() {
         try {
-          // WebRTC 要求在 HTTPS 或 localhost 環境下才能呼叫
+          // *** 僅請求音訊，不需要視訊 ***
           localStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
+            video: false,
             audio: true,
           });
-          localVideo.srcObject = localStream;
+
+          // 由於是純音訊，不再需要將串流賦予給 localVideo 元素
+          // 如果您希望有個東西來證明串流已啟動，可以顯示一個音量指示器，但這裡我們只是註解掉視訊部分
+          // localVideo.srcObject = localStream; // <-- 註解或移除此行
+
+          // 【可選】在 console 輸出，確認音訊軌道已獲取
+          console.log(
+            "成功獲取音訊串流！音軌數量:",
+            localStream.getAudioTracks().length
+          );
+
           startBtn.disabled = true;
           callBtn.disabled = false;
 
-          // 媒體取得成功後，就可以連線到信令伺服器
           connectSignalingServer();
         } catch (e) {
           console.error("無法取得媒體:", e);
-          alert(
-            "請確認您正在 HTTPS 或 localhost 環境下運行，並允許使用攝影機。"
-          );
+          // 警告訊息可以修改，使其更符合純音訊的語境
+          alert("請確認您正在 HTTPS/localhost 環境下運行，並允許使用麥克風。");
         }
       }
       function connectSignalingServer() {
